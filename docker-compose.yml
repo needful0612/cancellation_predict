@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+    volumes:
+      - ./models:/app/models
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.serve
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models
+    depends_on:
+      trainer:
+        condition: service_completed_successfully
+    # below is old method:
+    # serve container will keep trying to pull trained model from shared volumnes
+    # in short, if final_artifact.joblib not found kept showing up during building stage 
+    # consider extending the retries times
+    # restart: "on-failure:10"
