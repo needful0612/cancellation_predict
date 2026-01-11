@@ -15,40 +15,27 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.ensemble import RandomForestClassifier
 
-# --- CONFIGURATION ---
-DATA_PATH = "data/orders.csv"
-MODEL_OUTPUT_PATH = "models/final_artifact.joblib"
-RANDOM_SEED = 42
+from src.utils import (
+    process_booking_data, 
+    TRAINING_COLUMNS,
+    RANDOM_SEED,
+    MODEL_PATH,
+    DATA_PATH
+)
 
-def prepare_features(df):
-    df["order_date"] = pd.to_datetime(df["order_date"])
-    df["checkin_date"] = pd.to_datetime(df["checkin_date"])
-    df["checkout_date"] = pd.to_datetime(df["checkout_date"])
+def prepare_features(df_raw):
+    df_raw = pd.read_csv(DATA_PATH)
     
-    df['order_month'] = df['order_date'].dt.month
-    df['order_day_of_week'] = df['order_date'].dt.dayofweek
-    df['is_weekend'] = (df['order_date'].dt.dayofweek >= 5).astype(int)
-    df['customer_order_count'] = df.groupby('email')['email'].transform('count')
-    df["lead_time"] = (df["checkin_date"] - df["order_date"]).dt.days
-    df["stay_duration"] = (df["checkout_date"] - df["checkin_date"]).dt.days
+    df_raw['is_cancelled'] = (df_raw['cancel_date'] != "1900-01-01 00:00:00").astype(int)
+    df_raw['customer_order_count'] = df_raw.groupby('email')['email'].transform('count')
     
-    safe_stay = df["stay_duration"].replace(0, 1)
-    df["price_per_room"] = df["total_price"] / (df["room_qty"] * safe_stay)
+    X_processed = process_booking_data(df_raw)
     
-    df["deposit_ratio"] = (df["prepaid"] / df["total_price"]).clip(0, 1)
-    df["group_size"] = df["room_qty"]
-    
-    df['is_cancelled'] = (df['cancel_date'] != "1900-01-01 00:00:00").astype(int)
-    
-    drop_cols = [
-        'reservation_id', 'reservation_no', 'email', 'order_date', 
-        'checkin_date', 'checkout_date', 'cancel_date', 'room_qty'
-    ]
-    df.drop(columns=drop_cols, inplace=True)
-    return df
+    X_processed['is_cancelled'] = df_raw['is_cancelled'].values
+    return X_processed
 
 def build_preprocessor():
-    log_transformer = FunctionTransformer(np.log1p)
+    log_transformer = FunctionTransformer(np.log1p, feature_names_out="one-to-one")
     
     return ColumnTransformer(
         transformers=[
@@ -97,17 +84,34 @@ def train():
     print(f"--- Results ---")
     print(f"Best Val Threshold: {best_threshold:.2f}")
     print(f"Final Test AUC:      {test_auc:.4f}")
+    
+    rf_model = pipeline.named_steps['classifier']
+    try:
+        feature_names = pipeline.named_steps['preprocessor'].get_feature_names_out()
+    except Exception as e:
+        print(f"Warning: Could not extract feature names automatically: {e}")
+        feature_names = TRAINING_COLUMNS
+    
+    importances = rf_model.feature_importances_
 
-    os.makedirs(os.path.dirname(MODEL_OUTPUT_PATH), exist_ok=True)
+    feature_importance_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': importances
+    }).sort_values(by='importance', ascending=False)
+    
+    print("\n--- Global Feature Weights (Top 10) ---")
+    print(feature_importance_df.head(10))
+
     artifact = {
         "pipeline": pipeline,
         "threshold": best_threshold,
         "metadata": {
             "test_auc": test_auc,
-            "feature_names": X.columns.tolist()
+            "feature_names": X.columns.tolist(),
+            "global_importances": feature_importance_df.to_dict(orient="records")
         }
     }
-    joblib.dump(artifact, MODEL_OUTPUT_PATH)
-    print(f"Artifact saved to {MODEL_OUTPUT_PATH}")
+    joblib.dump(artifact, MODEL_PATH)
+    print(f"Artifact saved to {MODEL_PATH}")
 
 train()
